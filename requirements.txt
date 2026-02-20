@@ -1,7 +1,6 @@
 streamlit
 openai>=1.0.0
-langchain
-langchain-community
+langchain>=0.1.0
+langchain-community>=0.0.30
 wikipedia
 reportlab
-numpy
