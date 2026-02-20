@@ -3,16 +3,12 @@
 # ============================================================
 # 1. Import pacakgaes needed
 # ============================================================
-import os
 import hashlib
 import difflib
 import numpy as np
 import streamlit as st
 from openai import OpenAI
 from langchain_community.retrievers import WikipediaRetriever
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
