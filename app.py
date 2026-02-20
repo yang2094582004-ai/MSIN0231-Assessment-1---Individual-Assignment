@@ -341,4 +341,5 @@ if "report" in st.session_state:
                 st.caption(s["url"])
                 st.write(s["summary"])
                 st.divider()
+
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
