@@ -1,12 +1,11 @@
 
 
 # ============================================================
-# 1. Import pacakgaes needed
+# 1. Import packages needed
 # ============================================================
-import hashlib
 import difflib
-import numpy as np
 import streamlit as st
+import re
 from openai import OpenAI
 from langchain_community.retrievers import WikipediaRetriever
 from reportlab.lib.units import inch
@@ -20,21 +19,22 @@ from io import BytesIO
 
 # ChatGPT Model 40 mini for speed
 MODEL_LLM = "gpt-4o-mini"
-MODEL_EMBED = "text-embedding-3-small"
 
 # Initialize model
 TEMPERATURE = 0.5
 
 # keeps output < 500 words in practice
-MAX_OUTPUT_TOKENS = 600
+REPORT_MAX_TOKENS = 600
 
-TOP_K_PAGES = 5                  # Q2 requirement
-TOP_K_EVIDENCE_CHUNKS = 5
+# summary length control per Wikipedia page
+SUMMARY_MAX_TOKENS = 300
 
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 150
-MAX_CHUNKS_TO_EMBED = 40
-EMBED_BATCH_SIZE = 64
+# limit how much of each Wikipedia page we send to the LLM (cost + stability)
+MAX_PAGE_CHARACTERS = 6000
+
+MAX_SOURCE_PAGES = 5                 # Q2 requirement
+
+SUMMARY_TEMPERATURE = 0.2
 
 # ============================================================
 # 3. Application Setup
@@ -52,6 +52,33 @@ st.caption(
     "and generates a concise industry report based only on those sources."
 )
 
+# ============================================================
+# Utility Functions
+# ============================================================
+
+def safe_stop(message: str):
+    st.error(message)
+    st.stop()
+
+
+def suggest_industry_correction(user_input: str) -> str | None:
+    retriever = WikipediaRetriever(top_k_results=3)
+    docs = retriever.invoke(user_input)
+
+    if not docs:
+        return None
+
+    top_title = docs[0].metadata.get("title", "").lower()
+
+
+    similarity = difflib.SequenceMatcher(
+        None, user_input.lower(), top_title
+    ).ratio()
+
+    if similarity >= 0.75 and user_input.lower() != top_title:
+        return top_title
+
+    return None
 
 # ============================================================
 # 4. Sidebar (LLM + API Key)
@@ -66,214 +93,124 @@ llm_choice = st.sidebar.selectbox(
 api_key = st.sidebar.text_input("Enter API key", type="password")
 
 # ============================================================
-# 5.  Text Chunking, Embedding and Evidence Ranking
+# 5–7. Source Summaries (replace embedding + evidence ranking)
 # ============================================================
 
-def safe_stop(message: str):
-    """Display an error message and halt execution."""
-    st.error(message)
-    st.stop()
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two vectors."""
-    denom = np.linalg.norm(a) * np.linalg.norm(b)
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
-
-
-def chunk_text(text: str, size: int, overlap: int) -> list[str]:
+def build_source_summaries(client: OpenAI, docs, llm_choice: str):
     """
-    Split long Wikipedia text into overlapping chunks so that
-    semantic embeddings retain context.
+    Create short, analyst-oriented summaries for each of the 5 Wikipedia pages.
+    This replaces chunking + embeddings + cosine ranking.
     """
-    text = (text or "").strip()
-    if not text:
-        return []
+    summaries = []
 
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + size)
-        chunks.append(text[start:end])
-        if end == len(text):
-            break
-        start = max(0, end - overlap)
-
-    return chunks
-
-
-def stable_hash(items: list[str]) -> str:
-    """Generate a stable hash for embedding cache keys."""
-    return hashlib.md5("||".join(items).encode("utf-8")).hexdigest()
-
-
-def embed_batched(client: OpenAI, texts: list[str]) -> list[np.ndarray]:
-    """Embed texts in batches to avoid API rate issues."""
-    vectors = []
-    try:
-        for i in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[i:i + EMBED_BATCH_SIZE]
-            resp = client.embeddings.create(
-                model=MODEL_EMBED,
-                input=batch
-            )
-            vectors.extend(
-                [np.array(e.embedding, dtype=np.float32) for e in resp.data]
-            )
-        return vectors
-    except Exception as e:
-        safe_stop(f"Embedding failed: {e}")
-
-
-@st.cache_data(show_spinner=False)
-def cached_embeddings(texts: list[str], api_key: str, cache_key: str):
-    """
-    Cache embeddings so repeated runs with the same industry
-    do not recompute vectors.
-    """
-    _ = cache_key
-    client = OpenAI(api_key=api_key)
-    vectors = embed_batched(client, texts)
-    return [v.tolist() for v in vectors]
-
-# ============================================================
-# 6. Query Normalisation And Spelling Correction
-# ============================================================
-
-def suggest_industry_correction(user_input: str) -> str | None:
-    """
-    Suggest a corrected industry spelling using Wikipedia titles.
-    Does NOT auto-correct without user confirmation.
-    """
-    retriever = WikipediaRetriever(top_k_results=3)
-    docs = retriever.invoke(user_input)
-
-    if not docs:
-        return None
-
-    top_title = docs[0].metadata.get("title", "").lower()
-    similarity = difflib.SequenceMatcher(
-        None, user_input.lower(), top_title
-    ).ratio()
-
-    if similarity >= 0.75 and user_input.lower() != top_title:
-        return top_title
-
-    return None
-
-# ============================================================
-# 7. EVIDENCE RETRIEVAL (industry-only, stable)
-# ============================================================
-
-def retrieve_relevant_context(client, docs, query, api_key):
-    """
-    Select the most relevant evidence chunks from the retrieved
-    Wikipedia pages using semantic similarity.
-    """
-    chunks, metas = [], []
-
-    for d in docs:
+    for i, d in enumerate(docs, start=1):
         title = d.metadata.get("title", "Wikipedia")
-        source = d.metadata.get("source", "")
-        for ch in chunk_text(d.page_content, CHUNK_SIZE, CHUNK_OVERLAP):
-            chunks.append(ch)
-            metas.append({
-                "title": title,
-                "source": source,
-                "preview": ch[:200].replace("\n", " ") + "..."
-            })
+        url = d.metadata.get("source", "")
+        content = (d.page_content or "").strip()
 
-    if not chunks:
-        return "", []
+        # protect cost + keep stable
+        content = content[:MAX_PAGE_CHARACTERS]
 
-    # Limit for performance and determinism
-    chunks = chunks[:MAX_CHUNKS_TO_EMBED]
-    metas = metas[:MAX_CHUNKS_TO_EMBED]
+        prompt = f"""
+You are helping with market research.
+Summarize the Wikipedia page for a business analyst.
 
-    # Embed query and chunks
-    query_vec = np.array(
-        cached_embeddings([query], api_key, stable_hash([query]))[0],
-        dtype=np.float32
-    )
+[Page {i}]
+Title: {title}
+URL: {url}
 
-    chunk_vecs = [
-        np.array(v, dtype=np.float32)
-        for v in cached_embeddings(chunks, api_key, stable_hash(chunks))
-    ]
+Content:
+{content}
 
-    scores = [cosine_similarity(query_vec, v) for v in chunk_vecs]
-    top_idx = np.argsort(scores)[::-1][:TOP_K_EVIDENCE_CHUNKS]
+Write 90–120 words with:
+- What this page suggests about the industry/market context
+- Key entities/terms mentioned
+- Any constraints/limitations implied by the page
+Return plain text only.
+"""
 
-    evidence_text, evidence_meta = [], []
-    for i, idx in enumerate(top_idx, start=1):
-        evidence_text.append(f"[Evidence {i}] {chunks[idx]}")
-        evidence_meta.append({**metas[idx], "score": scores[idx]})
+        resp = client.chat.completions.create(
+            model=llm_choice,
+            temperature=SUMMARY_TEMPERATURE,
+            max_tokens=SUMMARY_MAX_TOKENS,
+            messages=[
+                {"role": "system", "content": "You summarize accurately and do not invent facts."},
+                {"role": "user", "content": prompt},
+            ],
+        )
 
-    return "\n\n".join(evidence_text), evidence_meta
+        summaries.append({
+            "idx": i,
+            "title": title,
+            "url": url,
+            "summary": resp.choices[0].message.content.strip()
+        })
+
+    return summaries
+
+
+
 
 # ============================================================
 # 8. Report Generation (industry-only)
 # ============================================================
 
-def generate_report(client, industry, evidence, llm_choice):
-    """
-    Generate a <500-word industry report using only Wikipedia evidence.
-    """
+def generate_report(client, industry, sources_block, llm_choice):
     system_prompt = (
         "You are a market research assistant.\n"
         "Rules:\n"
-        "- The report must be fewer than 500 words.\n"
-        "- Use ONLY the provided Wikipedia evidence.\n"
-        "- Do NOT invent facts, statistics, or citations.\n"
-        "- If evidence is insufficient, say so.\n"
+        "- Output must be fewer than 500 words.\n"
+        "- Use ONLY the provided Sources.\n"
+        "- Do NOT invent facts, numbers, or citations.\n"
+        "- If sources are insufficient, say so.\n"
         "- Use clear headings and bullet points.\n"
-        "- If you dont know the exact answer, apologize and say that you do not know. \n"
-        "- When making a claim, reference it with (Evidence X).\n"
-
+        "- When making a claim, cite it as (Source X).\n"
     )
 
     user_prompt = f"""
 Industry:
 {industry}
 
-Wikipedia evidence:
-{evidence}
+Sources:
+{sources_block}
 
 Task:
 Write a concise industry report with:
-1) Industry overview
-2) Market structure
-3) Key trends
-4) Risks
-5) Opportunities
-6) 3 follow-up research questions
-"""
+1) Market overview
+2) Value chain / segments
+3) Competitive landscape / ecosystem notes (only if supported by sources)
+4) Key trends
+5) Risks & unknowns
+6) Opportunities
+7) 3 follow-up research questions
+""".strip()
 
     resp = client.chat.completions.create(
         model=llm_choice,
         temperature=TEMPERATURE,
-        max_tokens=MAX_OUTPUT_TOKENS,
+        max_tokens=REPORT_MAX_TOKENS,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     )
+    return resp.choices[0].message.content.strip()
 
-    return resp.choices[0].message.content
+# --- Source highlight function ---
+def highlight_sources(text, source_summaries):
+    source_map = {str(s["idx"]): s["url"] for s in source_summaries}
 
-# --- Evidence highlight function ---
-import re
+    def replace(match):
+        source_number = match.group(1)
+        url = source_map.get(source_number, "#")
+        return (
+            f"<a href='{url}' target='_blank' "
+            f"style='color:#2563EB; font-weight:600; text-decoration:none;'>"
+            f"(Source {source_number})"
+            f"</a>"
+        )
 
-def highlight_evidence(text):
-    return re.sub(
-        r"\(Evidence (\d+)\)",
-        r"<span style='color:#2563EB; font-weight:600;'>(Evidence \1)</span>",
-        text
-    )
-
-
+    return re.sub(r"\(Source (\d+)\)", replace, text)
 # ============================================================
 
 # ============================================================
@@ -291,7 +228,7 @@ else:
 # ============================================================
 
 with st.form("industry_form"):
-    industry = st.text_input("Industry", placeholder="e.g. Jpop industry")
+    industry = st.text_input("Industry", placeholder="e.g. J-pop industry")
     submitted = st.form_submit_button("Generate report")
 
 if submitted:
@@ -304,7 +241,7 @@ if submitted:
 
     # Q0: validate API key
     if not api_key:
-        safe_stop("Please enter an API key in the sidebar (Q0).")
+        safe_stop("Please enter an API key in the sidebar.")
 
     # Typo suggestion
     suggestion = suggest_industry_correction(industry)
@@ -313,12 +250,11 @@ if submitted:
         if st.button("Use suggested spelling"):
             industry = suggestion
 
-    # Fixed retrieval query (industry-only)
-    retrieval_query = f"Provide an industry overview of the {industry}."
+
 
     # Q2: retrieve Wikipedia pages
     with st.status("Retrieving top Wikipedia pages…", expanded=False):
-        retriever = WikipediaRetriever(top_k_results=TOP_K_PAGES)
+        retriever = WikipediaRetriever(top_k_results=MAX_SOURCE_PAGES)
         docs = retriever.invoke(industry)
 
 
@@ -326,13 +262,13 @@ if submitted:
     if not docs:
         safe_stop("No Wikipedia pages found.")
 
-    if len(docs) < TOP_K_PAGES:
+    if len(docs) < MAX_SOURCE_PAGES:
         st.warning(
             f"Only {len(docs)} relevant Wikipedia page(s) were found. "
             "This may be due to ambiguity or spelling."
         )
 
-    docs = docs[:TOP_K_PAGES]
+    docs = docs[:MAX_SOURCE_PAGES]
 
     st.subheader("Top 5 relevant Wikipedia pages (URLs)")
     for i, d in enumerate(docs, start=1):
@@ -340,23 +276,29 @@ if submitted:
 
     # Q3: generate report
     with st.status("Generating industry report…", expanded=False):
-        context, evidence_meta = retrieve_relevant_context(
-            client, docs, retrieval_query, api_key
+        source_summaries = build_source_summaries(client, docs, llm_choice)
+
+        sources_block = "\n\n".join(
+            [f"[Source {s['idx']}] {s['title']} - {s['url']}\n{s['summary']}"
+             for s in source_summaries]
         )
-        report = generate_report(
-            client, industry, context, llm_choice
-        )
+
+        report = generate_report(client, industry, sources_block, llm_choice)
+
         st.session_state["report"] = report
-        st.session_state["evidence_meta"] = evidence_meta
+        st.session_state["source_summaries"] = source_summaries
         st.session_state["industry"] = industry
+
 
 if "report" in st.session_state:
 
     report = st.session_state["report"]
 
     st.subheader("Industry report (<500 words)")
-    highlighted_report = highlight_evidence(report)
-
+    highlighted_report = highlight_sources(
+        report,
+        st.session_state["source_summaries"]
+    )
     st.markdown(highlighted_report, unsafe_allow_html=True)
 
 
@@ -390,14 +332,13 @@ if "report" in st.session_state:
 
     if word_count > 500:
         st.warning(
-            "The report exceeds the 500-word limit. Consider reducing MAX_OUTPUT_TOKENS or lowering TEMPERATURE.")
+            "The report exceeds the 500-word limit. Consider reducing REPORT_MAX_TOKENS or lowering TEMPERATURE.")
 
-    if "evidence_meta" in st.session_state:
-        with st.expander("Show evidence used (optional)"):
-            for i, ev in enumerate(st.session_state["evidence_meta"], start=1):
-                st.markdown(f"**Evidence {i}** — score: `{ev['score']:.3f}` — *{ev['title']}*")
-                st.caption(ev["source"])
-                st.write(ev["preview"])
+    if "source_summaries" in st.session_state:
+        with st.expander("Show sources used (optional)"):
+            for s in st.session_state["source_summaries"]:
+                st.markdown(f"**Source {s['idx']}** — *{s['title']}*")
+                st.caption(s["url"])
+                st.write(s["summary"])
                 st.divider()
-
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
