@@ -1,0 +1,7 @@
+streamlit
+openai
+langchain
+langchain-community
+wikipedia
+reportlab
+numpy
