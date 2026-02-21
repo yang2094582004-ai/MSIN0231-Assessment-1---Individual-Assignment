@@ -288,6 +288,7 @@ if submitted:
         st.session_state["report"] = report
         st.session_state["source_summaries"] = source_summaries
         st.session_state["industry"] = industry
+        st.session_state["sources_block"] = sources_block
 
 
 if "report" in st.session_state:
@@ -301,6 +302,84 @@ if "report" in st.session_state:
     )
     st.markdown(highlighted_report, unsafe_allow_html=True)
 
+    REPORT_MAX_TOKENS
+
+####chat
+    st.divider()
+    st.subheader("Ask follow-up questions (chat)")
+
+    # 1) 初始化聊天记录
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    # 2) 展示历史对话
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            if msg["role"] == "assistant":
+                # assistant 的回答也做 Source 高亮可点击
+                st.markdown(
+                    highlight_sources(msg["content"], st.session_state["source_summaries"]),
+                    unsafe_allow_html=True
+                )
+            else:
+                st.write(msg["content"])
+
+    # 3) 输入框
+    user_question = st.chat_input("Ask something about this industry (e.g., 'Who are the most famous J-pop groups?')")
+
+    if user_question:
+        # 4) 记录用户问题
+        st.session_state["chat_history"].append({"role": "user", "content": user_question})
+
+        with st.chat_message("user"):
+            st.write(user_question)
+
+        # 5) 用 Sources 来回答（严格基于 sources_block）
+        sources_block = st.session_state.get("sources_block", "")
+        industry = st.session_state.get("industry", "")
+
+        chat_system_prompt = (
+            "You are a market research assistant.\n"
+            "Rules:\n"
+            "- Answer the user's question using ONLY the provided Sources.\n"
+            "- Do NOT use outside knowledge.\n"
+            "- If the Sources do not contain the answer, say so clearly.\n"
+            "- Keep it concise.\n"
+            "- When making a claim, cite it as (Source X).\n"
+        )
+
+        chat_user_prompt = f"""
+    Industry: {industry}
+
+    Sources:
+    {sources_block}
+
+    User question:
+    {user_question}
+
+    Answer:
+    """.strip()
+
+        resp = client.chat.completions.create(
+            model=llm_choice,
+            temperature=0.3,
+            max_tokens=250,
+            messages=[
+                {"role": "system", "content": chat_system_prompt},
+                {"role": "user", "content": chat_user_prompt},
+            ],
+        )
+
+        answer = resp.choices[0].message.content.strip()
+
+        # 6) 记录 assistant 回答
+        st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+
+        with st.chat_message("assistant"):
+            st.markdown(
+                highlight_sources(answer, st.session_state["source_summaries"]),
+                unsafe_allow_html=True
+            )
 
     # ---- Generate PDF ----
     buffer = BytesIO()
@@ -341,5 +420,4 @@ if "report" in st.session_state:
                 st.caption(s["url"])
                 st.write(s["summary"])
                 st.divider()
-
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
