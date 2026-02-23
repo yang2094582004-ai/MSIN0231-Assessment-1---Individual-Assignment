@@ -42,14 +42,14 @@ SUMMARY_TEMPERATURE = 0.2
 
 st.set_page_config(
     page_title="Market Research Assistant",
-    page_icon="📊",
+    page_icon="🔎",
     layout="centered"
 )
 
-st.title("📊 Market Research Assistant")
+st.title("🔎 Market Research Assistant")
 st.caption(
-    "Enter an industry. The assistant retrieves the top 5 relevant Wikipedia pages "
-    "and generates a concise industry report based only on those sources."
+    "Enter an industry to generate a structured market research report "
+    "based exclusively on the five most relevant Wikipedia sources."
 )
 
 # ============================================================
@@ -211,7 +211,6 @@ def highlight_sources(text, source_summaries):
         )
 
     return re.sub(r"\(Source (\d+)\)", replace, text)
-# ============================================================
 
 # ============================================================
 # 9. API KEY INITIALISATION
@@ -228,7 +227,7 @@ else:
 # ============================================================
 
 with st.form("industry_form"):
-    industry = st.text_input("Industry", placeholder="e.g. J-pop industry")
+    industry = st.text_input("Industry", placeholder="e.g. Automotive Industry")
     submitted = st.form_submit_button("Generate report")
 
 if submitted:
@@ -255,7 +254,28 @@ if submitted:
     # Q2: retrieve Wikipedia pages
     with st.status("Retrieving top Wikipedia pages…", expanded=False):
         retriever = WikipediaRetriever(top_k_results=MAX_SOURCE_PAGES)
-        docs = retriever.invoke(industry)
+
+        clean_industry = industry.replace("industry", "").strip()
+
+        query_main = clean_industry
+        query_industry = f"{clean_industry} industry"
+
+        docs_main = retriever.invoke(query_main)
+        docs_industry = retriever.invoke(query_industry)
+
+        combined_docs = (docs_main or []) + (docs_industry or [])
+
+        # 去重（按 title）
+        seen = set()
+        docs = []
+        for d in combined_docs:
+            title = (d.metadata.get("title") or "").strip()
+            if title and title not in seen:
+                seen.add(title)
+                docs.append(d)
+
+        docs = docs[:MAX_SOURCE_PAGES]
+
 
 
 
@@ -325,7 +345,7 @@ if "report" in st.session_state:
                 st.write(msg["content"])
 
     # 3) 输入框
-    user_question = st.chat_input("Ask something about this industry (e.g., 'Who are the most famous J-pop groups?')")
+    user_question = st.chat_input("Ask something about this industry (e.g., 'What risks are highlighted in the sources?')")
 
     if user_question:
         # 4) 记录用户问题
