@@ -8,6 +8,7 @@ import streamlit as st
 import re
 from openai import OpenAI
 from langchain_community.retrievers import WikipediaRetriever
+from langchain_community.utilities import WikipediaAPIWrapper
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
@@ -16,6 +17,12 @@ from io import BytesIO
 # ============================================================
 # 2. Configuration
 # ============================================================
+wiki = WikipediaAPIWrapper(lang="en")
+def make_wiki_retriever(top_k: int):
+    return WikipediaRetriever(
+        wiki_client=wiki,
+        top_k_results=top_k
+    )
 
 # ChatGPT Model 40 mini for speed
 MODEL_LLM = "gpt-4o-mini"
@@ -32,7 +39,8 @@ SUMMARY_MAX_TOKENS = 300
 # limit how much of each Wikipedia page we send to the LLM (cost + stability)
 MAX_PAGE_CHARACTERS = 6000
 
-MAX_SOURCE_PAGES = 5                 # Q2 requirement
+# Q2 requirement
+MAX_SOURCE_PAGES = 5
 
 SUMMARY_TEMPERATURE = 0.2
 
@@ -55,21 +63,20 @@ st.caption(
 # ============================================================
 # Utility Functions
 # ============================================================
-
 def safe_stop(message: str):
     st.error(message)
     st.stop()
 
 
 def suggest_industry_correction(user_input: str) -> str | None:
-    retriever = WikipediaRetriever(top_k_results=3)
+    retriever = make_wiki_retriever(top_k=3)
+
     docs = retriever.invoke(user_input)
 
     if not docs:
         return None
 
     top_title = docs[0].metadata.get("title", "").lower()
-
 
     similarity = difflib.SequenceMatcher(
         None, user_input.lower(), top_title
@@ -91,6 +98,11 @@ llm_choice = st.sidebar.selectbox(
 )
 
 api_key = st.sidebar.text_input("Enter API key", type="password")
+
+if api_key:
+    client = OpenAI(api_key=api_key)
+else:
+    client = None
 
 # ============================================================
 # 5–7. Source Summaries (replace embedding + evidence ranking)
@@ -212,15 +224,6 @@ def highlight_sources(text, source_summaries):
 
     return re.sub(r"\(Source (\d+)\)", replace, text)
 
-# ============================================================
-# 9. API KEY INITIALISATION
-# ============================================================
-
-if api_key:
-    client = OpenAI(api_key=api_key)
-else:
-    client = None
-
 
 # ============================================================
 # 10. USER INTERFACE (Q1–Q3)
@@ -253,7 +256,7 @@ if submitted:
 
     # Q2: retrieve Wikipedia pages
     with st.status("Retrieving top Wikipedia pages…", expanded=False):
-        retriever = WikipediaRetriever(top_k_results=MAX_SOURCE_PAGES)
+        retriever = make_wiki_retriever(top_k=MAX_SOURCE_PAGES)
 
         clean_industry = industry.replace("industry", "").strip()
 
@@ -265,7 +268,7 @@ if submitted:
 
         combined_docs = (docs_main or []) + (docs_industry or [])
 
-        # 去重（按 title）
+        # Deduplicate by title
         seen = set()
         docs = []
         for d in combined_docs:
@@ -322,21 +325,21 @@ if "report" in st.session_state:
     )
     st.markdown(highlighted_report, unsafe_allow_html=True)
 
-    REPORT_MAX_TOKENS
+
 
 ####chat
     st.divider()
     st.subheader("Ask follow-up questions (chat)")
 
-    # 1) 初始化聊天记录
+    # 1) Initialize chat history
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
 
-    # 2) 展示历史对话
+    # 2) Display chat history
     for msg in st.session_state["chat_history"]:
         with st.chat_message(msg["role"]):
             if msg["role"] == "assistant":
-                # assistant 的回答也做 Source 高亮可点击
+                # Highlight and make Sources clickable in assistant responses
                 st.markdown(
                     highlight_sources(msg["content"], st.session_state["source_summaries"]),
                     unsafe_allow_html=True
@@ -344,17 +347,17 @@ if "report" in st.session_state:
             else:
                 st.write(msg["content"])
 
-    # 3) 输入框
+    # 3) Chat input
     user_question = st.chat_input("Ask something about this industry (e.g., 'What risks are highlighted in the sources?')")
 
     if user_question:
-        # 4) 记录用户问题
+        # 4) Store user message
         st.session_state["chat_history"].append({"role": "user", "content": user_question})
 
         with st.chat_message("user"):
             st.write(user_question)
 
-        # 5) 用 Sources 来回答（严格基于 sources_block）
+        # 5) Answer using Sources (strictly based on sources_block)
         sources_block = st.session_state.get("sources_block", "")
         industry = st.session_state.get("industry", "")
 
@@ -392,7 +395,7 @@ if "report" in st.session_state:
 
         answer = resp.choices[0].message.content.strip()
 
-        # 6) 记录 assistant 回答
+        # 6) Save assistant message
         st.session_state["chat_history"].append({"role": "assistant", "content": answer})
 
         with st.chat_message("assistant"):
