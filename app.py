@@ -1,5 +1,3 @@
-
-
 # ============================================================
 # 1. Import packages needed
 # ============================================================
@@ -61,7 +59,7 @@ st.caption(
 )
 
 # ============================================================
-# Utility Functions
+# 4. Utility Functions
 # ============================================================
 def safe_stop(message: str):
     st.error(message)
@@ -88,7 +86,7 @@ def suggest_industry_correction(user_input: str) -> str | None:
     return None
 
 # ============================================================
-# 4. Sidebar (LLM + API Key)
+# 5. Sidebar (LLM + API Key)
 # ============================================================
 st.sidebar.header("Settings")
 
@@ -105,7 +103,7 @@ else:
     client = None
 
 # ============================================================
-# 5–7. Source Summaries (replace embedding + evidence ranking)
+# 6. Source Summaries (replace embedding + evidence ranking)
 # ============================================================
 
 def build_source_summaries(client: OpenAI, docs, llm_choice: str):
@@ -164,7 +162,7 @@ Return plain text only.
 
 
 # ============================================================
-# 8. Report Generation (industry-only)
+# 7. Report Generation (industry-only)
 # ============================================================
 
 def generate_report(client, industry, sources_block, llm_choice):
@@ -226,7 +224,7 @@ def highlight_sources(text, source_summaries):
 
 
 # ============================================================
-# 10. USER INTERFACE (Q1–Q3)
+# 8. USER INTERFACE (Q1–Q3)
 # ============================================================
 
 with st.form("industry_form"):
