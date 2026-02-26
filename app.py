@@ -56,6 +56,7 @@ st.title("🔎 Market Research Assistant")
 st.caption(
     "Enter an industry to generate a structured market research report "
     "based exclusively on the five most relevant Wikipedia sources."
+    "Follow-up questions are also answered strictly using these same five sources."
 )
 
 # ============================================================
