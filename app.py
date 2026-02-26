@@ -225,7 +225,7 @@ def highlight_sources(text, source_summaries):
 
 
 # ============================================================
-# 8. USER INTERFACE (Q1–Q3)
+# 8.  User Interface
 # ============================================================
 
 with st.form("industry_form"):
@@ -313,6 +313,11 @@ if submitted:
         st.session_state["sources_block"] = sources_block
 
 
+# ============================================================
+# 9. Report Display and Highlighting
+# Displays the generated report and highlights source citations.
+# ============================================================
+
 if "report" in st.session_state:
 
     report = st.session_state["report"]
@@ -326,7 +331,10 @@ if "report" in st.session_state:
 
 
 
-####chat
+# ============================================================
+# 10. Follow-up Question Chat Interface
+# Allows users to ask additional questions grounded in the same sources.
+# ============================================================
     st.divider()
     st.subheader("Ask follow-up questions (chat)")
 
@@ -403,7 +411,10 @@ if "report" in st.session_state:
                 unsafe_allow_html=True
             )
 
-    # ---- Generate PDF ----
+# ============================================================
+# 11. PDF Report Export
+# Generates a downloadable PDF version of the report.
+ # ============================================================
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     elements = []
@@ -427,7 +438,10 @@ if "report" in st.session_state:
         mime="application/pdf"
     )
 
-    # --- report length check ---
+# ============================================================
+# 12. Report Validation and Source Transparency
+# Validates word count and optionally displays source summaries.
+# ============================================================
     word_count = len((report or "").split())
     st.caption(f"Word count: {word_count}")
 
