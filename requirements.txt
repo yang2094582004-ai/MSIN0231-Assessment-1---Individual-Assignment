@@ -1,5 +1,5 @@
-streamlit
+streamlit>=1.30.0
 openai>=1.0.0
 langchain-community>=0.0.38
-wikipedia
-reportlab
+wikipedia>=1.4.0
+reportlab>=4.0.0
